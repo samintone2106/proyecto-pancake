@@ -5,10 +5,15 @@
  *
  *   - channel='email':    envía un email vía Gmail SMTP (mismo patrón
  *                         que notify-deadlines).
- *   - channel='whatsapp': STUB hasta que esté la API de Pancake. Devuelve
- *                         { ok: true, channel_status: 'pending_api', link }
- *                         para que el cliente pueda copiar el link y
- *                         enviarlo manualmente por ahora.
+ *   - channel='whatsapp': intenta, en este orden:
+ *                         1. API propia de Pancake (PANCAKE_WA_API_*), si
+ *                            está configurada.
+ *                         2. Twilio (TWILIO_*), el mismo canal que ya usa
+ *                            `process-notifications`.
+ *                         3. Si no hay ninguno, STUB: devuelve
+ *                            { ok: true, channel_status: 'pending_api', link }
+ *                            para que el cliente copie el link y lo envíe
+ *                            manualmente.
  *
  * Variables (configurar con `supabase secrets set`):
  *   - SUPABASE_URL
@@ -17,8 +22,12 @@
  *   - GMAIL_APP_PASSWORD     ← App Password de Google
  *   - APP_BASE_URL           ← origen del frontend (ej. https://progestion.pancake.lat)
  *                              si falta, intentamos derivarlo del header Origin.
- *   - PANCAKE_WA_API_URL     ← TODO: endpoint de WhatsApp de Pancake (opcional)
- *   - PANCAKE_WA_API_TOKEN   ← TODO: bearer token (opcional)
+ *   - PANCAKE_WA_API_URL     ← endpoint de WhatsApp de Pancake (opcional)
+ *   - PANCAKE_WA_API_TOKEN   ← bearer token de la API de Pancake (opcional)
+ *   - TWILIO_ACCOUNT_SID     ← fallback de WhatsApp (opcional)
+ *   - TWILIO_AUTH_TOKEN
+ *   - TWILIO_WHATSAPP_FROM   ej. "whatsapp:+14155238886" (sandbox) o tu
+ *                              número aprobado en producción.
  *
  * Deploy:
  *   supabase functions deploy invite-user --no-verify-jwt
@@ -37,6 +46,46 @@ function esc(s: string | null | undefined): string {
 
 function buildLink(baseUrl: string, token: string): string {
   return `${baseUrl.replace(/\/$/, '')}/?invite=${encodeURIComponent(token)}`;
+}
+
+// Normaliza a dígitos para Twilio (E.164 sin +). Móvil CO de 10 dígitos
+// empezando en 3 → prepende 57. Si no, deja como llegó. Mismo criterio que
+// `process-notifications` para que un mismo teléfono resuelva igual en los
+// dos canales.
+function normalizePhone(raw: string): string {
+  const digits = (raw || "").replace(/\D+/g, "");
+  if (!digits) return "";
+  if (digits.length === 10 && digits.startsWith("3")) return "57" + digits;
+  return digits;
+}
+
+// Envío por Twilio. Misma implementación que en `process-notifications`.
+async function sendTwilioWhatsApp(toPhone: string, body: string, sid: string, token: string, from: string): Promise<{ ok: boolean; error?: string }> {
+  const digits = normalizePhone(toPhone);
+  if (!digits) return { ok: false, error: "invalid phone" };
+  const formData = new URLSearchParams({
+    From: from,
+    To: `whatsapp:+${digits}`,
+    Body: body,
+  });
+  const auth = btoa(`${sid}:${token}`);
+  try {
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${auth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: formData,
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { ok: false, error: `twilio ${res.status}: ${errText.slice(0, 300)}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 function buildEmailHtml(opts: { teamName: string; inviterName: string; link: string; role: string }) {
@@ -133,28 +182,52 @@ async function handle(req: Request): Promise<Response> {
 
   // ============== WhatsApp ==============
   if (inv.channel === 'whatsapp') {
+    if (!inv.phone) return json({ error: 'Invitación WhatsApp sin destinatario' }, 400);
+
+    const message = `Hola! ${inviter?.name || 'Pancake'} te invitó al equipo "${team?.name || ''}" en Pro-Gestión. Aceptá la invitación acá: ${link}`;
+    const markSent = () => supabase
+      .from("invitations")
+      .update({ status: 'enviada', sent_at: new Date().toISOString() })
+      .eq("id", inv.id);
+
+    // 1) API propia de Pancake, si está configurada. Formato esperado:
+    //    POST { to, message } con bearer token.
     const waUrl = Deno.env.get("PANCAKE_WA_API_URL");
     const waToken = Deno.env.get("PANCAKE_WA_API_TOKEN");
-    if (!waUrl || !waToken) {
-      // Modo stub: marcamos como pendiente y devolvemos el link para envío manual.
-      await supabase.from("invitations").update({ status: 'pendiente', sent_at: null }).eq("id", inv.id);
-      return json({ ok: true, channel_status: 'pending_api', link, message: 'API de Pancake no configurada. Copia el link y envialo manualmente.' });
+    if (waUrl && waToken) {
+      try {
+        const res = await fetch(waUrl, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${waToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: inv.phone, message })
+        });
+        if (!res.ok) throw new Error(`Pancake WA: ${res.status} ${await res.text()}`);
+        await markSent();
+        return json({ ok: true, channel_status: 'sent', link, via: 'pancake' });
+      } catch (e) {
+        return json({ ok: false, error: (e as Error).message, link }, 500);
+      }
     }
-    // TODO: cuando esté la API real, reemplazar este bloque por la llamada
-    // real. Formato esperado (placeholder): POST { to, message } con bearer.
-    const message = `Hola! ${inviter?.name || 'Pancake'} te invitó al equipo "${team?.name || ''}" en Pro-Gestión. Aceptá la invitación acá: ${link}`;
-    try {
-      const res = await fetch(waUrl, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${waToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: inv.phone, message })
-      });
-      if (!res.ok) throw new Error(`Pancake WA: ${res.status} ${await res.text()}`);
-      await supabase.from("invitations").update({ status: 'enviada', sent_at: new Date().toISOString() }).eq("id", inv.id);
-      return json({ ok: true, channel_status: 'sent', link });
-    } catch (e) {
-      return json({ ok: false, error: (e as Error).message, link }, 500);
+
+    // 2) Twilio: el canal de WhatsApp que ya usa `process-notifications`.
+    //    Con los mismos secrets seteados, las invitaciones salen solas sin
+    //    esperar a la API de Pancake.
+    const twilioSid = Deno.env.get("TWILIO_ACCOUNT_SID");
+    const twilioToken = Deno.env.get("TWILIO_AUTH_TOKEN");
+    const twilioFrom = Deno.env.get("TWILIO_WHATSAPP_FROM");
+    if (twilioSid && twilioToken && twilioFrom) {
+      const r = await sendTwilioWhatsApp(inv.phone, message, twilioSid, twilioToken, twilioFrom);
+      if (r.ok) {
+        await markSent();
+        return json({ ok: true, channel_status: 'sent', link, via: 'twilio' });
+      }
+      return json({ ok: false, error: r.error, link }, 500);
     }
+
+    // 3) Sin ningún canal configurado: marcamos como pendiente y devolvemos
+    //    el link para envío manual.
+    await supabase.from("invitations").update({ status: 'pendiente', sent_at: null }).eq("id", inv.id);
+    return json({ ok: true, channel_status: 'pending_api', link, message: 'WhatsApp automático no configurado (ni Pancake ni Twilio). Copia el link y envialo manualmente.' });
   }
 
   // ============== Email ==============

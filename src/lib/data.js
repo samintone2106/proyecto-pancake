@@ -311,11 +311,12 @@ export async function cancelInvitation(id) {
   if (error) throw error;
 }
 
-// Dispara el envío real llamando a la edge function. Para WhatsApp queda
-// en modo stub hasta que esté la API de Pancake (la función devuelve
-// `pending_api` y la UI muestra el aviso). Si el email/teléfono pertenece
-// a un usuario ya registrado, la edge function detecta el match y skipea
-// el envío externo (la notif in-app la inserta el trigger de mig-30).
+// Dispara el envío real llamando a la edge function. WhatsApp sale por la
+// API de Pancake si está configurada, si no por Twilio; sin ninguno de los
+// dos la función devuelve `pending_api` y la UI muestra el aviso para envío
+// manual. Si el email/teléfono pertenece a un usuario ya registrado, la
+// edge function detecta el match y skipea el envío externo (la notif
+// in-app la inserta el trigger de mig-30).
 export async function sendInvitation(invitationId) {
   const { data, error } = await supabase.functions.invoke('invite-user', {
     body: { invitation_id: invitationId }

@@ -10,10 +10,10 @@ import { createInvitation, sendInvitation, friendlyDbError } from '../lib/data';
 //
 //   1. AUTOMÁTICA ("Enviar automático"): crea la invitación e intenta
 //      dispararla por la edge function `invite-user` (Gmail SMTP para email,
-//      API de Pancake para WhatsApp, o notif in-app si el destinatario ya
-//      tiene cuenta). Si la edge function NO está desplegada o falla, la
-//      invitación NO se cancela: caemos a modo manual y mostramos el link +
-//      mensaje para enviarlo a mano.
+//      API de Pancake o Twilio para WhatsApp, o notif in-app si el
+//      destinatario ya tiene cuenta). Si la edge function NO está
+//      desplegada o falla, la invitación NO se cancela: caemos a modo
+//      manual y mostramos el link + mensaje para enviarlo a mano.
 //
 //   2. MANUAL ("Generar link manual"): crea la invitación sin tocar la edge
 //      function y te entrega un mensaje pre-escrito con el link para que lo

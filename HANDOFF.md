@@ -28,7 +28,7 @@ Modela el trabajo que el equipo llevaba en un Excel "Resumen" (Google Sheet `1CI
 | Export | jsPDF + jspdf-autotable; CSV con BOM |
 | Charts | Chart.js + react-chartjs-2 |
 | Email | **Gmail SMTP** vía `denomailer` en edge functions (antes Resend, ya migrado) |
-| WhatsApp | **Twilio** (process-notifications) + stub API Pancake (invite-user, TODO) |
+| WhatsApp | **Twilio** (process-notifications e invite-user) + API Pancake opcional (invite-user, si se configura `PANCAKE_WA_API_*`) |
 
 Sin test runner. Lint: `npm run lint`.
 
@@ -86,7 +86,7 @@ supabase secrets set \
 | `APP_BASE_URL` | invite-user | base para links de invitación (ej. `https://progestion.pancake.lat`) |
 | `PORTAL_BASE_URL` | process-notifications | base del portal (default `https://app.pancake.lat`) |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_WHATSAPP_FROM` | process-notifications | **opcional** — WhatsApp. Sin esto, WA cae a email |
-| `PANCAKE_WA_API_URL` / `PANCAKE_WA_API_TOKEN` | invite-user | **TODO / stub** — WhatsApp de invitaciones, aún no cableado |
+| `PANCAKE_WA_API_URL` / `PANCAKE_WA_API_TOKEN` | invite-user | Opcional — API propia de WhatsApp. Sin esto, las invitaciones salen por Twilio |
 
 ### 4.3 Cron / pg_cron (dentro de Postgres)
 Dos jobs registrados por migraciones. Ambos invocan una edge function con `Bearer <SERVICE_ROLE_JWT>` **hardcodeado en el SQL**:
@@ -222,7 +222,7 @@ Roles reales: `super_admin | admin | gerente | lider_equipos | lider_equipo | mi
 - **Placeholders en cron** (mig-17 y mig-32): reemplazar `<SERVICE_ROLE_JWT>` (y `<PROJECT_REF>` en 17). Rotar service_role = actualizar los jobs o dejan de disparar.
 - **41 archivos SQL sueltos**, sin CLI de migración (`supabase/migrations/` no versionado). Orden e idempotencia manuales → riesgo de aplicar fuera de orden.
 - **Seeds acoplados al Excel.** Dependen del Google Sheet externo; no se re-sincronizan solos si el negocio cambia el sheet.
-- **WhatsApp a mitad**: `invite-user` es stub (`PANCAKE_WA_API_*` TODO); el canal real vive en `process-notifications` vía Twilio (opcional).
+- **WhatsApp**: `invite-user` manda por API de Pancake si `PANCAKE_WA_API_*` está seteado, si no por Twilio (`TWILIO_*`, los mismos secrets de `process-notifications`); sin ninguno de los dos queda en modo manual (`pending_api`). La API de Pancake sigue sin existir: el camino en producción es Twilio.
 - **`legacy/`** — predecesor vanilla JS, no se importa, no tocar salvo pedido.
 - **`data.js` monolítico** — concentra todo el acceso a datos; candidato a dividir por dominio.
 - **Dominio de app** no está en el repo; confirmar hosting con el equipo.
